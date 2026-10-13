@@ -15,9 +15,10 @@
     "dwg",
     "autocad",
     "制图",
-    "图纸",
-    "平面图",
-    "CAD 看图"
+    "绘图",
+    "图纸编辑",
+    "CAD 编辑器",
+    "命令行绘图"
   ],
   "openInBrowser": false,
   "packid": "otools-cadcraft",
