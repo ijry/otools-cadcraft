@@ -84,7 +84,13 @@ export function validateAuthConfig(mode,env) {
 export function marketPayload(manifest,repo,tag,version) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || '')) throw new Error('GitHub 仓库名称无效');
   const base=`https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}`;
-  return {...productionManifest(manifest,version),packageUrl:`${base}/${manifest.packid}-${version}.oplg`,logo:`${base}/logo.svg`};
+  // logo 不能用 Release 资产下载链：GitHub 会 302 到
+  // application/octet-stream + Content-Disposition: attachment，
+  // Chromium（OTools 的 WebView2）的 <img> 直接拒载，市场上显示不出图标。
+  // 改用 raw.githubusercontent.com 上同一 tag 的仓库文件：返回 image/svg+xml，
+  // 可直接渲染，且随 tag 固定不会漂移。
+  const logo=`https://raw.githubusercontent.com/${repo}/${encodeURIComponent(tag)}/logo.svg`;
+  return {...productionManifest(manifest,version),packageUrl:`${base}/${manifest.packid}-${version}.oplg`,logo};
 }
 export async function publishMarket(url,access,payload,fetcher=fetch) {
   const result=await jsonRequest(fetcher,url,{method:'POST',headers:{Authorization:`Bearer ${token(access)}`,'Content-Type':'application/json'},body:JSON.stringify(payload)});
