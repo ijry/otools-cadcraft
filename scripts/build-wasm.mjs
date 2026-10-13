@@ -35,7 +35,9 @@ const run = (command, args, options = {}) => {
 };
 
 const capture = (command, args) => {
-  const result = spawnSync(command, args, { encoding: 'utf8' });
+  // stdin 用 ignore：某些机器（安全软件挂钩匿名管道）上给子进程接 stdin 管道
+  // 会让 CreateProcess 直接 EBUSY；capture 只读 stdout，不需要 stdin。
+  const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (result.error) return null;
   return result.stdout?.trim() ?? '';
 };

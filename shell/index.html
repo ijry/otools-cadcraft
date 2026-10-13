@@ -22,15 +22,22 @@
      * 把「选文件 / 读文件 / 另存 / 写文件」换成宿主调用，WASM 侧（shell/src/otools.rs）
      * 通过 wasm-bindgen 直接调下面这几个函数。
      *
+     * 宿主能力有两条路，任一条通就算「在 OTools 里」：
+     *   1. `window.otools` / `window.utools`：宿主注入的包装 API
+     *      （dialog.open/save + readHostFile/writeHostFile）。
+     *   2. `window.__TAURI_INTERNALS__.invoke`：Tauri 原生 IPC，可直接调
+     *      `tools_webview_pick_files` / `tools_webview_read_file` /
+     *      `tools_webview_pick_save_path` / `tools_webview_write_file`。
+     * 两条路都不通（把 dist 拖进普通浏览器）才退回上游的浏览器行为。
+     * 实测个别 webview 里整段 init script 的后半段不到岗（`window.otools` 没定义），
+     * 此时第 2 条路照样能弹宿主对话框、读写宿主文件；只认第 1 条路会让插件
+     * **静默**退化成浏览器下载——每次保存都下一个新文件，正是要避免的事故。
+     *
      * 不依赖 otools-plugin-sdk：插件是纯 Rust/WASM 应用，没有前端打包环节。
      */
     (function () {
       var NAME_MAP_KEY = 'cadcraft.otools.paths';
-
-      function host() {
-        if (typeof window === 'undefined') return null;
-        return window.otools || window.utools || null;
-      }
+      var DIAG_KEY = 'cadcraft.otools.diag';
 
       // 打开/另存时给对话框的扩展名过滤：OPEN 能读的格式（与上游 upload.rs 的 ACCEPT 一致）
       var DRAWING_FILTERS = [{ name: '图形', extensions: ['dxf', 'dwg', 'dxb', 'dwt'] }];
@@ -41,7 +48,7 @@
         return i >= 0 ? s.slice(i + 1) : s;
       }
 
-      // 「文件名 -> 上次真实落盘路径」的映射，让 QSAVE（再次保存）不再弹对话框。
+      // 「文件名 -> 上次真实落盘路径」的映射，让再次保存不再弹对话框。
       // 存 localStorage，跨插件重启仍然记得。
       function loadMap() {
         try { return JSON.parse(window.localStorage.getItem(NAME_MAP_KEY) || '{}') || {}; } catch (e) { return {}; }
@@ -50,13 +57,122 @@
         try { window.localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map)); } catch (e) { /* 忽略 */ }
       }
 
+      // 诊断面包屑：宿主实际走了哪条路、每次保存落到哪，写进 localStorage 便于排查
+      // （插件没有 devtools，这是事后唯一能看到页面内部状态的渠道）。
+      function diag(patch) {
+        try {
+          var d = JSON.parse(window.localStorage.getItem(DIAG_KEY) || '{}') || {};
+          for (var k in patch) d[k] = patch[k];
+          d.at = new Date().toISOString();
+          window.localStorage.setItem(DIAG_KEY, JSON.stringify(d));
+        } catch (e) { /* 忽略 */ }
+      }
+
       function fail(message) { return Promise.reject(new Error(message)); }
 
+      // —— 宿主能力探测 ——
+
+      /** 完整的宿主包装 API，没有则返回 null。 */
+      function wrapper() {
+        var a = (typeof window !== 'undefined' && (window.otools || window.utools)) || null;
+        return a && a.dialog && typeof a.dialog.open === 'function' && typeof a.readHostFile === 'function' ? a : null;
+      }
+
+      /** Tauri 原生 IPC（包装没注入时的兜底通道；普通浏览器里没有）。 */
+      function tauriInvoke() {
+        var candidates = [window];
+        try { if (window.parent && window.parent !== window) candidates.push(window.parent); } catch (e) { /* 跨域，忽略 */ }
+        try { if (window.top && window.top !== window) candidates.push(window.top); } catch (e) { /* 跨域，忽略 */ }
+        for (var i = 0; i < candidates.length; i++) {
+          var t = candidates[i] && candidates[i].__TAURI_INTERNALS__;
+          if (t && typeof t.invoke === 'function') return t.invoke.bind(t);
+        }
+        return null;
+      }
+
+      function hostReady() { return !!wrapper() || !!tauriInvoke(); }
+
+      // 对话框 / 文件读写的统一入口：优先包装，包装不在就直接 invoke。
+      // 返回值的形状对齐 window.otools 的约定（路径字符串或 null）。
+
+      function firstPath(picked) {
+        if (Array.isArray(picked)) return picked.length ? picked[0] : null;
+        if (picked && typeof picked === 'object' && typeof picked.path === 'string') return picked.path.trim() || null;
+        return typeof picked === 'string' ? (picked.trim() || null) : null;
+      }
+
+      /** 弹打开对话框，返回选中的路径（取消为 null）。 */
+      function pickOpenPath() {
+        var a = wrapper();
+        if (a) {
+          return a.dialog.open({ directory: false, multiple: false, title: '打开图形', filters: DRAWING_FILTERS }).then(firstPath);
+        }
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 宿主不可用');
+        return invoke('tools_webview_pick_files', { options: { multiple: false, title: '打开图形', filters: DRAWING_FILTERS } }).then(function (files) {
+          var list = Array.isArray(files) ? files : (files ? [files] : []);
+          var first = list[0];
+          if (!first) return null;
+          return typeof first === 'string' ? first.trim() || null : (first.path ? String(first.path).trim() || null : null);
+        });
+      }
+
+      function readHostFile(path) {
+        var a = wrapper();
+        if (a) return a.readHostFile(path);
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 宿主不可用');
+        return invoke('tools_webview_read_file', { path: path });
+      }
+
+      function writeHostFile(path, dataBase64) {
+        var a = wrapper();
+        if (a) return a.writeHostFile({ path: path, dataBase64: dataBase64 });
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 宿主不可用');
+        return invoke('tools_webview_write_file', { path: path, dataBase64: dataBase64 });
+      }
+
+      /** 拆默认路径为「目录 + 建议名」，规则与宿主 resolveDialogDirectoryAndName 一致；
+       *  纯文件名只当建议名（宿主的拆法会把它当成目录，那是宿主的 quirks）。 */
+      function splitPath(p) {
+        var s = String(p || '').trim();
+        if (!s) return { directory: undefined, fileName: undefined };
+        var m = s.match(/^(.*[\\/])([^\\/]+)$/);
+        if (!m) return { directory: undefined, fileName: s };
+        return { directory: m[1].replace(/[\\/]+$/, '') || undefined, fileName: m[2].trim() || undefined };
+      }
+
+      /** 弹另存对话框，返回选中的路径（取消为 null）。 */
+      function pickSavePath(defaultPath) {
+        var a = wrapper();
+        if (a) {
+          return a.dialog.save({ title: '保存图形', defaultPath: defaultPath, filters: DRAWING_FILTERS }).then(firstPath);
+        }
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 宿主不可用');
+        var sp = splitPath(defaultPath);
+        return invoke('tools_webview_pick_save_path', {
+          options: { title: '保存图形', suggestedName: sp.fileName, directory: sp.directory, filters: DRAWING_FILTERS },
+        }).then(function (meta) {
+          if (!meta) return null;
+          return typeof meta === 'string' ? meta.trim() || null : (meta.path ? String(meta.path).trim() || null : null);
+        });
+      }
+
       window.cadcraftOtools = {
-        /** 是否运行在 OTools 宿主里（否则退回上游的浏览器行为）。 */
+        /** 是否运行在 OTools 宿主里（两条宿主通道任一条通即为真；否则退回上游的浏览器行为）。 */
         available: function () {
-          var a = host();
-          return !!(a && a.dialog && typeof a.dialog.open === 'function' && typeof a.readHostFile === 'function');
+          var a = wrapper();
+          if (a) { diag({ bridge: 'wrapper', host: true }); return true; }
+          var raw = !!tauriInvoke();
+          if (raw) {
+            diag({ bridge: 'raw', host: true });
+            try { console.warn('[cadcraftOtools] window.otools 包装缺失，改用 Tauri IPC 直连 tools_webview_* 命令'); } catch (e) { /* 忽略 */ }
+          } else {
+            diag({ bridge: 'none', host: false });
+          }
+          return raw;
         },
 
         /** OTools 的界面主题（dark/light/空串），用于给 egui 选初始主题。 */
@@ -74,21 +190,18 @@
          * @returns {Promise<Array<{name: string, path: string, dataBase64: string}>>}
          */
         openFiles: function () {
-          var a = host();
-          if (!a || !a.dialog || typeof a.dialog.open !== 'function') return fail('OTools 打开文件对话框不可用');
-          return a.dialog
-            .open({ directory: false, multiple: false, title: '打开图形', filters: DRAWING_FILTERS })
-            .then(function (picked) {
-              var path = Array.isArray(picked) ? picked[0] : picked;
-              if (!path) return [];
-              if (typeof a.readHostFile !== 'function') return fail('OTools readHostFile 不可用');
-              return a.readHostFile(path).then(function (file) {
-                var map = loadMap();
-                map[file.name || baseName(path)] = path;
-                saveMap(map);
-                return [{ name: file.name || baseName(path), path: path, dataBase64: file.dataBase64 || '' }];
-              });
+          if (!hostReady()) return fail('OTools 打开文件对话框不可用');
+          return pickOpenPath().then(function (path) {
+            if (!path) return [];
+            return readHostFile(path).then(function (file) {
+              var name = (file && file.name) || baseName(path);
+              var map = loadMap();
+              map[name] = path;
+              saveMap(map);
+              diag({ lastOpen: path });
+              return [{ name: name, path: path, dataBase64: (file && file.dataBase64) || '' }];
             });
+          });
         },
 
         /**
@@ -99,29 +212,27 @@
          * @returns {Promise<{path: string}|null>} null 表示用户在对话框里取消了。
          */
         saveFile: function (request) {
-          var a = host();
           var req = request || {};
           var name = String(req.name || 'Drawing.dxf');
-          if (!a || typeof a.writeHostFile !== 'function') return fail('OTools writeHostFile 不可用');
+          if (!hostReady()) return fail('OTools 保存对话框不可用');
 
           var map = loadMap();
           var known = map[name];
           if (!req.forcePick && known) {
-            return a.writeHostFile({ path: known, dataBase64: req.dataBase64 }).then(function () {
+            return writeHostFile(known, req.dataBase64).then(function () {
+              diag({ lastSave: known, lastSaveMode: 'overwrite' });
               return { path: known };
             });
           }
-          if (!a.dialog || typeof a.dialog.save !== 'function') return fail('OTools 保存对话框不可用');
-          return a.dialog
-            .save({ title: '保存图形', defaultPath: known || name, filters: DRAWING_FILTERS })
-            .then(function (path) {
-              if (!path) return null;
-              map[name] = path;
-              saveMap(map);
-              return a.writeHostFile({ path: path, dataBase64: req.dataBase64 }).then(function () {
-                return { path: path };
-              });
+          return pickSavePath(known || name).then(function (path) {
+            if (!path) return null;
+            map[name] = path;
+            saveMap(map);
+            return writeHostFile(path, req.dataBase64).then(function () {
+              diag({ lastSave: path, lastSaveMode: 'dialog' });
+              return { path: path };
             });
+          });
         }
       };
     })();

@@ -47,6 +47,29 @@ JS 侧只有 `shell/index.html` 里那一段（约 120 行）：把 `window.otoo
 **不引入 native cdylib**：宿主已经注入了无路径白名单限制的 `tools_webview_read_file` /
 `tools_webview_write_file` 与文件对话框，再加一层 FFI 只会多一份分发产物。
 
+### 宿主探测：双通道 + 诊断面包屑
+
+宿主的 init script 是一长串拼接（theme → locale → preload.js → env → embedded-runtime.js →
+noder runtime.js，共约 130KB），实测个别 webview 里**后半段可能不到岗**——`window.otools`
+没定义，但 Tauri 自己的 `__TAURI_INTERNALS__.invoke` 是好的。所以 `shell/index.html`
+的桥同时认两条路，任一条通就算「在 OTools 里」：
+
+| 通道 | 入口 | 说明 |
+| --- | --- | --- |
+| 包装 API | `window.otools` / `window.utools` | 宿主的 `dialog.open/save` + `readHostFile`/`writeHostFile` |
+| Tauri IPC 直连 | `window.__TAURI_INTERNALS__.invoke` | 直接调 `tools_webview_pick_files` / `tools_webview_read_file` / `tools_webview_pick_save_path` / `tools_webview_write_file`（含 `window.parent`/`window.top` 兜底查找） |
+
+两条都不通（把 `dist/` 拖进普通浏览器）才退回上游的浏览器下载行为。这个区分是**必须**的：
+只认第一条路时，一旦包装没到位，插件会**静默**退化成浏览器下载——表现为「两个保存按钮
+每点一次都建一个新文件（`Drawing1 (1).dxf`、`Drawing1 (2).dxf`…）」，正是 0.6.3 修复的事故。
+
+另存对话框的默认路径会按宿主的 `resolveDialogDirectoryAndName` 规则拆成
+`{directory, fileName}`；纯文件名只当建议名（宿主会把裸文件名误判成目录，这是宿主的 quirk）。
+
+排查用：桥会把状态写进 localStorage 的 `cadcraft.otools.diag`（走了哪条通道、每次打开/保存
+的落点与模式：`overwrite`/`dialog`）。插件没有 devtools，这是事后唯一能看到页面内部状态
+的渠道；WebView2 的 leveldb 里可以直接翻。
+
 ## 构建
 
 ```bash
