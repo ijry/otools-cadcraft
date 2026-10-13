@@ -91,6 +91,28 @@ git subtree pull --prefix=upstream https://github.com/storytold/cadcraft.git mai
 2. `shell/Cargo.toml` 里上游 crate 的版本号（现在写死 `0.36` 等）跟着 `upstream/Cargo.toml`
    的 `[workspace.dependencies]` 走。
 
+## 打包本地安装包（.oplg）
+
+```bash
+node scripts/pack-plugin.mjs      # 产物在 dist-pack/：otools-cadcraft-<version>.oplg
+node scripts/verify-plugin.mjs    # 打包后自检（强烈建议每次都跑）
+```
+
+`pack-plugin.mjs` 做三件事：
+
+1. 从 `plugin.json` 生成**生产清单**——删掉 `devUrl` / `quickDev`（正式包不允许带），
+   版本号可被第二个参数覆盖（`node scripts/pack-plugin.mjs 0.6.3`）。
+2. 打成扁平结构的 ZIP（`plugin.json` / `logo.svg` / `dist/…`），即 `.oplg`。
+3. 产出一份可直接整目录托管的发布目录：`plugin.json`、`logo.svg`、`SHA256SUMS`、`meta.json`。
+
+`verify-plugin.mjs` 不依赖第三方库（自带最小 ZIP 读取器），校验清单合法性、
+SHA256SUMS 覆盖与匹配、无 `devUrl`/`quickDev`、ZIP 条目无重复/无反斜杠/无绝对路径/无 `..`、
+逐条 CRC 与解压大小、`entry` 与 `logo.svg` 在包内、入口 HTML 含 OTools 宿主桥、包内有 `.wasm`。
+
+**本地安装**：OTools 插件市场 → 安装本地插件 → 选 `.oplg`（`.zip` 也行），
+或把 `dist-pack/` 下那份扁平目录整个丢进宿主插件目录。安装后即插即用，无需额外依赖
+（插件是纯前端，不注册 native dylib）。
+
 ## 已知限制
 
 - **「另存为」改名字后，标题栏仍显示旧名**：上游 `Services::pick_save` 是同步的，
