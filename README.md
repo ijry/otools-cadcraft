@@ -63,6 +63,13 @@ noder runtime.js，共约 130KB），实测个别 webview 里**后半段可能�
 只认第一条路时，一旦包装没到位，插件会**静默**退化成浏览器下载——表现为「两个保存按钮
 每点一次都建一个新文件（`Drawing1 (1).dxf`、`Drawing1 (2).dxf`…）」，正是 0.6.3 修复的事故。
 
+**参数形状**（Rust 侧 `rename_all = "camelCase"`，Tauri 按参数名从 invoke 载荷里取）：
+`pick_files`/`pick_save_path` 收 `{ options: {...} }`，`read_file` 收 `{ path }`，
+而 `write_file` 收 **`{ request: { path, dataBase64 } }`**——它是结构体参数，平铺传会被
+`missing required key \`request\`` 拒掉。宿主自带的 `writeHostFile` 包装恰恰就是平铺传的
+（latent bug），所以桥写文件时**只要 raw IPC 在就优先走 raw**，包装只在 raw 不在时兜底
+（0.6.4 修复：真机 QSAVE 报 `invalid args \`request\``）。
+
 另存对话框的默认路径会按宿主的 `resolveDialogDirectoryAndName` 规则拆成
 `{directory, fileName}`；纯文件名只当建议名（宿主会把裸文件名误判成目录，这是宿主的 quirk）。
 

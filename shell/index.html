@@ -29,6 +29,11 @@
      *      `tools_webview_pick_files` / `tools_webview_read_file` /
      *      `tools_webview_pick_save_path` / `tools_webview_write_file`。
      * 两条路都不通（把 dist 拖进普通浏览器）才退回上游的浏览器行为。
+     *
+     * 参数形状（Rust 侧 `rename_all = "camelCase"`）：
+     *   - pick_files / pick_save_path：`{ options: {...} }`
+     *   - read_file：`{ path }`
+     *   - write_file：`{ request: { path, dataBase64 } }`（结构体参数，别平铺！）
      * 实测个别 webview 里整段 init script 的后半段不到岗（`window.otools` 没定义），
      * 此时第 2 条路照样能弹宿主对话框、读写宿主文件；只认第 1 条路会让插件
      * **静默**退化成浏览器下载——每次保存都下一个新文件，正是要避免的事故。
@@ -126,11 +131,24 @@
       }
 
       function writeHostFile(path, dataBase64) {
-        var a = wrapper();
-        if (a) return a.writeHostFile({ path: path, dataBase64: dataBase64 });
+        // 注意：Rust 侧 `tools_webview_write_file(request: WebviewWriteFileRequest)` 收的是
+        // 名为 `request` 的结构体，平铺 `{path, dataBase64}` 会被 Tauri 以
+        // "missing required key `request`" 拒掉——宿主自带的 writeHostFile 包装正是这么调的
+        // （ latent bug），所以只要 raw IPC 在就优先走 raw；包装只在 raw 不在时兜底。
         var invoke = tauriInvoke();
-        if (!invoke) return fail('OTools 宿主不可用');
-        return invoke('tools_webview_write_file', { path: path, dataBase64: dataBase64 });
+        if (invoke) {
+          return invoke('tools_webview_write_file', { request: { path: path, dataBase64: dataBase64 } }).catch(function (rawError) {
+            // 老版本宿主的 write_file 收平铺参数：raw 结构体传参失败时退回宿主包装再试一次
+            var a = wrapper();
+            if (a && typeof a.writeHostFile === 'function') {
+              return a.writeHostFile({ path: path, dataBase64: dataBase64 });
+            }
+            throw rawError;
+          });
+        }
+        var a = wrapper();
+        if (a && typeof a.writeHostFile === 'function') return a.writeHostFile({ path: path, dataBase64: dataBase64 });
+        return fail('OTools 宿主不可用');
       }
 
       /** 拆默认路径为「目录 + 建议名」，规则与宿主 resolveDialogDirectoryAndName 一致；
