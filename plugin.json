@@ -1,0 +1,28 @@
+{
+  "devUrl": "http://127.0.0.1:6482",
+  "developerName": "jry",
+  "displayName": "CADCraft",
+  "displayNameCN": "CAD 制图",
+  "entry": "dist/index.html",
+  "quickDev": true,
+  "hasAd": false,
+  "icon": "📐",
+  "inPluginPurchase": false,
+  "key": [
+    "cad",
+    "cadcraft",
+    "dxf",
+    "dwg",
+    "autocad",
+    "制图",
+    "图纸",
+    "平面图",
+    "CAD 看图"
+  ],
+  "openInBrowser": false,
+  "packid": "otools-cadcraft",
+  "screenshots": [],
+  "summary": "CADCraft（开源、纯 Rust 重写的 AutoCAD 式 CAD）的 OTools 插件版：命令行式绘图、对象捕捉、图层、标注、填充、图块，以及 DXF 读写与 DWG 打开。",
+  "uuid": "otools-cadcraft",
+  "version": "0.6.2"
+}

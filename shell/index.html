@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>CADCraft</title>
+  <link data-trunk rel="rust" data-bin="otools-cadcraft" data-wasm-opt="z" data-weak-refs />
+  <link data-trunk rel="copy-file" href="favicon.svg" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #22282f; }
+    #cadcraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #cadcraft_loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: #b8b8b8; font: 14px system-ui, sans-serif; pointer-events: none; }
+  </style>
+  <script>
+    /*
+     * OTools 宿主桥（插件唯一需要写的 JS）。
+     * ------------------------------------------------------------------
+     * 上游 CADCraft 的网页版没有文件系统：打开走 <input type=file>，保存走浏览器下载。
+     * OTools 宿主注入了 `window.otools`，提供真正的文件对话框与磁盘读写，所以这里
+     * 把「选文件 / 读文件 / 另存 / 写文件」换成宿主调用，WASM 侧（shell/src/otools.rs）
+     * 通过 wasm-bindgen 直接调下面这几个函数。
+     *
+     * 不依赖 otools-plugin-sdk：插件是纯 Rust/WASM 应用，没有前端打包环节。
+     */
+    (function () {
+      var NAME_MAP_KEY = 'cadcraft.otools.paths';
+
+      function host() {
+        if (typeof window === 'undefined') return null;
+        return window.otools || window.utools || null;
+      }
+
+      // 打开/另存时给对话框的扩展名过滤：OPEN 能读的格式（与上游 upload.rs 的 ACCEPT 一致）
+      var DRAWING_FILTERS = [{ name: '图形', extensions: ['dxf', 'dwg', 'dxb', 'dwt'] }];
+
+      function baseName(p) {
+        var s = String(p || '');
+        var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+        return i >= 0 ? s.slice(i + 1) : s;
+      }
+
+      // 「文件名 -> 上次真实落盘路径」的映射，让 QSAVE（再次保存）不再弹对话框。
+      // 存 localStorage，跨插件重启仍然记得。
+      function loadMap() {
+        try { return JSON.parse(window.localStorage.getItem(NAME_MAP_KEY) || '{}') || {}; } catch (e) { return {}; }
+      }
+      function saveMap(map) {
+        try { window.localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map)); } catch (e) { /* 忽略 */ }
+      }
+
+      function fail(message) { return Promise.reject(new Error(message)); }
+
+      window.cadcraftOtools = {
+        /** 是否运行在 OTools 宿主里（否则退回上游的浏览器行为）。 */
+        available: function () {
+          var a = host();
+          return !!(a && a.dialog && typeof a.dialog.open === 'function' && typeof a.readHostFile === 'function');
+        },
+
+        /** OTools 的界面主题（dark/light/空串），用于给 egui 选初始主题。 */
+        theme: function () {
+          if (typeof document === 'undefined') return '';
+          var cl = document.documentElement && document.documentElement.classList;
+          if (!cl) return '';
+          if (cl.contains('dark')) return 'dark';
+          if (cl.contains('light')) return 'light';
+          return '';
+        },
+
+        /**
+         * 打开图形：弹宿主的打开文件对话框，读取选中的文件。
+         * @returns {Promise<Array<{name: string, path: string, dataBase64: string}>>}
+         */
+        openFiles: function () {
+          var a = host();
+          if (!a || !a.dialog || typeof a.dialog.open !== 'function') return fail('OTools 打开文件对话框不可用');
+          return a.dialog
+            .open({ directory: false, multiple: false, title: '打开图形', filters: DRAWING_FILTERS })
+            .then(function (picked) {
+              var path = Array.isArray(picked) ? picked[0] : picked;
+              if (!path) return [];
+              if (typeof a.readHostFile !== 'function') return fail('OTools readHostFile 不可用');
+              return a.readHostFile(path).then(function (file) {
+                var map = loadMap();
+                map[file.name || baseName(path)] = path;
+                saveMap(map);
+                return [{ name: file.name || baseName(path), path: path, dataBase64: file.dataBase64 || '' }];
+              });
+            });
+        },
+
+        /**
+         * 保存图形。
+         * @param {{name: string, dataBase64: string, forcePick: boolean}} request
+         *   `forcePick` 为真时总是弹另存对话框（对应「另存为」），否则若该文件名
+         *   上次存过就静默覆盖（对应「保存」/QSAVE）。
+         * @returns {Promise<{path: string}|null>} null 表示用户在对话框里取消了。
+         */
+        saveFile: function (request) {
+          var a = host();
+          var req = request || {};
+          var name = String(req.name || 'Drawing.dxf');
+          if (!a || typeof a.writeHostFile !== 'function') return fail('OTools writeHostFile 不可用');
+
+          var map = loadMap();
+          var known = map[name];
+          if (!req.forcePick && known) {
+            return a.writeHostFile({ path: known, dataBase64: req.dataBase64 }).then(function () {
+              return { path: known };
+            });
+          }
+          if (!a.dialog || typeof a.dialog.save !== 'function') return fail('OTools 保存对话框不可用');
+          return a.dialog
+            .save({ title: '保存图形', defaultPath: known || name, filters: DRAWING_FILTERS })
+            .then(function (path) {
+              if (!path) return null;
+              map[name] = path;
+              saveMap(map);
+              return a.writeHostFile({ path: path, dataBase64: req.dataBase64 }).then(function () {
+                return { path: path };
+              });
+            });
+        }
+      };
+    })();
+  </script>
+</head>
+<body>
+  <canvas id="cadcraft_canvas"></canvas>
+  <div id="cadcraft_loading">正在加载 CADCraft…</div>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="CADCraft">
+  <rect width="256" height="256" rx="56" fill="#1d252e"/>
+  <!-- 网格 -->
+  <g stroke="#3b4a5a" stroke-width="2">
+    <path d="M44 60H212M44 96H212M44 132H212M44 168H212M44 204H212"/>
+    <path d="M60 44V212M96 44V212M132 44V212M168 44V212M204 44V212"/>
+  </g>
+  <!-- 绘图区 -->
+  <rect x="44" y="44" width="168" height="168" fill="none" stroke="#5c9dd6" stroke-width="8"/>
+  <!-- 圆规弧 -->
+  <path d="M60 196A136 136 0 0 1 196 60" fill="none" stroke="#f0a03a" stroke-width="10" stroke-linecap="round"/>
+  <!-- 圆心 -->
+  <circle cx="60" cy="196" r="14" fill="#f0a03a"/>
+  <circle cx="196" cy="60" r="14" fill="#5c9dd6"/>
+</svg>

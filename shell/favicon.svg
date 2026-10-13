@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="CADCraft">
+  <rect width="256" height="256" rx="56" fill="#1d252e"/>
+  <rect x="44" y="44" width="168" height="168" fill="none" stroke="#5c9dd6" stroke-width="14"/>
+  <path d="M60 196A136 136 0 0 1 196 60" fill="none" stroke="#f0a03a" stroke-width="18" stroke-linecap="round"/>
+</svg>
