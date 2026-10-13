@@ -143,6 +143,39 @@ SHA256SUMS 覆盖与匹配、无 `devUrl`/`quickDev`、ZIP 条目无重复/无�
 或把 `dist-pack/` 下那份扁平目录整个丢进宿主插件目录。安装后即插即用，无需额外依赖
 （插件是纯前端，不注册 native dylib）。
 
+## 发布插件（独立发布，不走 otools-publish）
+
+本插件是**独立仓库发布**（与 `compositor-tauri` 同模式，不经过 otools-publish 的宿主流水线）：
+自己的 release workflow 构建 → GitHub Release 托管 `.oplg` → 提交同一个插件市场 API。
+
+```bash
+# 一条命令：dry-run=false 正式发布 + publish_market=true 上架市场
+gh workflow run release-plugin.yml --ref main -R ijry/otools-cadcraft \
+  -f dry_run=false -f publish_market=true -f auth_mode=pat -f display_version=0.6.4
+```
+
+| 环节 | 做法 |
+| --- | --- |
+| 触发 | `workflow_dispatch`（手动，四个开关见上）或 push tag `v*`（自动） |
+| 构建 | ubuntu-latest：`node --test scripts/*.test.mjs` → rust stable + wasm32 + trunk v0.21.14（预编译二进制）→ `node scripts/build-wasm.mjs` |
+| 打包校验 | `pack-plugin.mjs --out dist-pack --version <v>` → `verify-plugin.mjs dist-pack`（发布前在 publish job 里再校验一次） |
+| Release | tag `plugin-otools-cadcraft-v<v>`，资产 `.oplg` + `logo.svg` + `plugin.json` + `SHA256SUMS` |
+| 市场 | `publish-market.mjs`（pat/oidc/login/shared 四种认证）POST 生产清单 + `packageUrl` + `logo` 到市场 API |
+
+配套脚本（均移植自 otools-aigv，各带 `node --test` 回归）：
+
+- `scripts/publish-market.mjs`：市场认证与载荷。秘密只在进程内使用，不写 artifact、不进 job outputs；
+  `meta` 子命令给 workflow 输出版本/标签/开关，`preflight` 只检查凭证格式不发起请求。
+- `scripts/release-policy.mjs`：只读核验发布标签归属——同版本 tag 已指向别的提交时拒绝覆盖。
+
+**凭证**：市场令牌是 `release` **环境级** secret `XYCLOUD_PAT`（不是仓库级 secret），
+在 GitHub 仓库 Settings → Environments → release → Secrets 里维护。workflow 的
+`environment: release` 让 publish job 才能读到它。
+
+**发新版 checklist**：改 `plugin.json` 的 `version` → 本地 `node scripts/build-wasm.mjs`
++ 三场景回归 → commit/push → 上面的 `gh workflow run` → 核验 run 全绿、
+`gh release view plugin-otools-cadcraft-v<v>` 资产齐全、市场返回成功。
+
 ## 已知限制
 
 - **「另存为」改名字后，标题栏仍显示旧名**：上游 `Services::pick_save` 是同步的，
