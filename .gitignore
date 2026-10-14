@@ -18,3 +18,7 @@ Thumbs.db
 
 # playwright-cli 本地调试的临时输出
 .playwright-cli/
+
+# ---- 上游源码 ----
+# 已迁到 upstream.pin + 按需拉取，不再随仓库分发
+/upstream/
