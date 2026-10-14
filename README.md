@@ -150,7 +150,7 @@ SHA256SUMS 覆盖与匹配、无 `devUrl`/`quickDev`、ZIP 条目无重复/无�
 
 ```bash
 # 一条命令：dry-run=false 正式发布 + publish_market=true 上架市场
-gh workflow run release-plugin.yml --ref main -R ijry/otools-cadcraft \
+gh workflow run release-plugin.yml --ref main -R ootools/otools-cadcraft \
   -f dry_run=false -f publish_market=true -f auth_mode=pat -f display_version=0.6.4
 ```
 
