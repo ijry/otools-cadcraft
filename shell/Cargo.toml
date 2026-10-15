@@ -26,6 +26,8 @@ path = "src/main.rs"
 cadcraft-engine = { path = "../upstream/crates/engine" }
 cadcraft-ui-egui = { path = "../upstream/crates/ui-egui" }
 cadcraft-io = { path = "../upstream/crates/io" }
+# 宿主字体桥：把系统字体目录喂给上游字体库、按需读回字节（见 src/fontbridge.rs）。
+cadcraft-fonts = { path = "../upstream/crates/fonts" }
 egui = { version = "0.36", default-features = false }
 log = { version = "0.4", default-features = false }
 serde_json = { version = "1", features = ["float_roundtrip"] }

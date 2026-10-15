@@ -14,6 +14,8 @@
 #[cfg(target_arch = "wasm32")]
 pub mod download;
 #[cfg(target_arch = "wasm32")]
+mod fontbridge;
+#[cfg(target_arch = "wasm32")]
 mod otools;
 
 #[cfg(target_arch = "wasm32")]
@@ -60,6 +62,8 @@ mod web {
             self.0.logic(ctx);
             // 让插件更纯粹：吞掉所有外部链接（Discord 等社区外链），点击不再跳出插件。
             ctx.output_mut(|o| o.commands.retain(|c| !matches!(c, egui::OutputCommand::OpenUrl(_))));
+            // 宿主字体桥：把应用要过的系统字体文件读进来（有界批量，读完请求重绘）。
+            crate::fontbridge::poll(ctx);
         }
         fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
             self.0.raw_input_hook(raw);
@@ -182,6 +186,8 @@ mod web {
                         // 没有路径可用：OPEN 由 pick_open 发起，读到的字节在后台送进 inbox。
                         let inbox = crate::upload::Inbox::new(&cc.egui_ctx);
                         crate::otools::install(inbox.clone());
+                        // 宿主字体桥：取一次系统字体目录（异步，到达后字体下拉即可列出）。
+                        crate::fontbridge::fetch_catalog();
                         if crate::otools::available() {
                             app.services.pick_open = Some(Box::new(crate::otools::pick_open));
                         } else {

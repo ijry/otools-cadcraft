@@ -34,9 +34,14 @@
      *   - pick_files / pick_save_path：`{ options: {...} }`
      *   - read_file：`{ path }`
      *   - write_file：`{ request: { path, dataBase64 } }`（结构体参数，别平铺！）
+     *   - list_fonts：`{}`（宿主字体桥，见下）
      * 实测个别 webview 里整段 init script 的后半段不到岗（`window.otools` 没定义），
      * 此时第 2 条路照样能弹宿主对话框、读写宿主文件；只认第 1 条路会让插件
      * **静默**退化成浏览器下载——每次保存都下一个新文件，正是要避免的事故。
+     *
+     * 宿主字体桥（listSystemFonts / readHostFile）也走这两条路：wasm 读不到本机
+     * 字体，而 CAD 的「文档内容字体」要能用系统里装的任意字体，于是启动时枚举一次
+     * 系统字体目录（族名/样式/路径），用到的字体再按路径读字节（shell/src/fontbridge.rs）。
      *
      * 不依赖 otools-plugin-sdk：插件是纯 Rust/WASM 应用，没有前端打包环节。
      */
@@ -128,6 +133,22 @@
         var invoke = tauriInvoke();
         if (!invoke) return fail('OTools 宿主不可用');
         return invoke('tools_webview_read_file', { path: path });
+      }
+
+      // 宿主字体桥：枚举系统字体（宿主只解析每个字体文件的 name 表，返回
+      // [{family, style, path, index, size}]），喂给 wasm 里的字体库；字节按需再读。
+      function listSystemFonts() {
+        var a = wrapper();
+        if (a && typeof a.listSystemFonts === 'function') return a.listSystemFonts();
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 宿主不可用');
+        return invoke('tools_webview_list_fonts', {});
+      }
+
+      // 探针专用：无头验证字体桥时，注入的脚本覆盖本函数请求「解析某个字体名」/
+      // 「列出字体族」。正常运行时恒返回 null（Rust 侧每帧问一次，空转）。
+      function probeRequest() {
+        return window.__CADCRAFT_PROBE_REQUEST__ || null;
       }
 
       function writeHostFile(path, dataBase64) {
@@ -256,17 +277,39 @@
               return { path: known };
             });
           }
-          return pickSavePath(known || name).then(function (path) {
-            if (!path) return null;
-            map[name] = path;
-            saveMap(map);
-            return writeHostFile(path, req.dataBase64).then(function () {
-              diag({ lastSave: path, lastSaveMode: 'dialog' });
-              return { path: path };
+            return pickSavePath(known || name).then(function (path) {
+              if (!path) return null;
+              map[name] = path;
+              saveMap(map);
+              return writeHostFile(path, req.dataBase64).then(function () {
+                diag({ lastSave: path, lastSaveMode: 'dialog' });
+                return { path: path };
+              });
             });
-          });
-        }
-      };
+          },
+
+          /**
+           * 宿主字体桥：枚举系统字体（族名/样式/路径/面索引），供 wasm 字体库列出
+           * 「文档内容字体」。不在 OTools 里时 reject（桥整体静默）。
+           * @returns {Promise<Array<{family: string, style: string, path: string, index: number, size: number}>>}
+           */
+          listSystemFonts: function () {
+            return listSystemFonts();
+          },
+
+          /**
+           * 读宿主磁盘文件（字体桥按路径读字体字节；与打开文档同一条路）。
+           * @returns {Promise<{path: string, name: string, dataBase64: string}>}
+           */
+          readHostFile: function (path) {
+            return readHostFile(path);
+          },
+
+          /** 探针专用（无头验证）：正常恒返回 null。 */
+          probeRequest: function () {
+            return probeRequest();
+          }
+        };
     })();
   </script>
 </head>

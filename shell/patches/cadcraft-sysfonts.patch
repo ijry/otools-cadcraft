@@ -1,0 +1,193 @@
+diff --git a/crates/fonts/src/lib.rs b/crates/fonts/src/lib.rs
+index 9ccc69c..5dcc5b1 100644
+--- a/crates/fonts/src/lib.rs
++++ b/crates/fonts/src/lib.rs
+@@ -28,6 +28,10 @@ pub use mtext::{MTextColor, MTextLayout, MTextParams, MTextPiece, layout_mtext,
+ mod craft_fonts;
+ pub use craft_fonts::{CRAFT_FONTS, CraftFont};
+ 
++/// OTools 宿主字体桥（wasm）：宿主枚举系统字体、按需供字节，见 `ttf::host_bridge`。
++#[cfg(target_arch = "wasm32")]
++pub use ttf::host_bridge::{register_host, set_system_catalog, system_families, take_pending_fonts, SystemFont};
++
+ /// Name of the built-in font.
+ pub const BUILTIN_FONT: &str = "CADCraft Stroke";
+ 
+diff --git a/crates/fonts/src/ttf.rs b/crates/fonts/src/ttf.rs
+index 62759c1..65b9622 100644
+--- a/crates/fonts/src/ttf.rs
++++ b/crates/fonts/src/ttf.rs
+@@ -179,6 +179,10 @@ struct Db {
+     fallback: Fallback,
+     /// Bytes of font files loaded from disk so far (bounded by `MAX_LOADED_BYTES`).
+     loaded_bytes: usize,
++    /// The OTools host's system font catalog (wasm): every face it listed
++    /// ([`host_bridge::set_system_catalog`]).
++    #[cfg(target_arch = "wasm32")]
++    host: Vec<host_bridge::SystemFont>,
+ }
+ 
+ /// State of the missing-glyph search.
+@@ -202,6 +206,11 @@ enum Source {
+     File(PathBuf),
+     /// A font compiled into the binary ([`crate::CRAFT_FONTS`]), copied on first use.
+     Static(&'static [u8]),
++    /// A font file the OTools host listed (wasm): its bytes are read over the host bridge
++    /// on demand (the file enters [`host_bridge::PENDING`], the shell reads it and calls
++    /// [`host_bridge::register_host`]).
++    #[cfg(target_arch = "wasm32")]
++    Host { path: String, index: u32 },
+ }
+ 
+ fn lock() -> MutexGuard<'static, Db> {
+@@ -297,6 +306,12 @@ impl Db {
+         let bytes = Arc::new(match self.paths.get(stem)? {
+             Source::File(path) => read_file(path)?,
+             Source::Static(bytes) => bytes.to_vec(),
++            #[cfg(target_arch = "wasm32")]
++            Source::Host { path, index } => {
++                // wasm 没有文件系统：记下这个文件，等宿主桥把字节读进来（register_host）。
++                host_bridge::push_pending(path.clone(), *index);
++                return None;
++            }
+         });
+         self.loaded_bytes = self.loaded_bytes.saturating_add(bytes.len());
+         self.files.insert(stem.to_string(), bytes.clone());
+@@ -473,6 +488,102 @@ pub fn register(name: &str, bytes: Vec<u8>) {
+     g.fallback = Fallback::default();
+ }
+ 
++/// OTools 宿主字体桥（wasm）：宿主枚举系统字体，字节按需经宿主桥读入。
++///
++/// wasm 里没有文件系统，上游的字体扫描恒空；OTools 宿主能枚举并读系统字体，于是
++/// 「文档内容字体」不再局限于内嵌字体：宿主给目录（[`set_system_catalog`]），应用
++/// 第一次用到某个字体时该文件进待读队列（[`take_pending_fonts`]），外壳读回字节后
++/// [`register_host`] 装进库，之后按族名/文件名都能找到（缓存已清）。
++#[cfg(target_arch = "wasm32")]
++pub mod host_bridge {
++    use std::sync::{Mutex, PoisonError};
++
++    use super::{Fallback, Source, lock};
++
++    /// A system font face the OTools host listed: family/style for the font menus,
++    /// path + face index for reading its bytes over the host bridge.
++    #[derive(Clone, Debug)]
++    pub struct SystemFont {
++        pub family: String,
++        pub style: String,
++        pub path: String,
++        pub index: u32,
++    }
++
++    /// Font files the app asked for, waiting for their bytes: (path, face index).
++    static PENDING: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
++
++    /// Most files one round of lookups may queue. A family-name lookup can name up to
++    /// `MAX_FAMILY_FILES + MAX_FIRST_WORD_FILES` candidates, and a missing-glyph search
++    /// walks the whole ranked list; the shell reads what fits, best candidates first.
++    const MAX_PENDING: usize = 64;
++
++    /// Remember that `path`'s face `index` is wanted (deduplicated, bounded).
++    pub(super) fn push_pending(path: String, index: u32) {
++        let mut q = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
++        if q.len() >= MAX_PENDING || q.iter().any(|(p, i)| *p == path && *i == index) {
++            return;
++        }
++        q.push((path, index));
++    }
++
++    /// Take the font files asked for since the last call; the shell reads their bytes
++    /// over the host bridge and hands them to [`register_host`].
++    pub fn take_pending_fonts() -> Vec<(String, u32)> {
++        std::mem::take(&mut *PENDING.lock().unwrap_or_else(PoisonError::into_inner))
++    }
++
++    /// Lower-case file stem of a font path (`C:\Fonts\NotoSansSC-Bold.ttf` →
++    /// `notosanssc-bold`): the key font files are known by, the same key a native
++    /// scan derives from the file name.
++    fn stem_of(path: &str) -> String {
++        let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
++        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
++        stem.chars().map(|c| c.to_ascii_lowercase()).collect()
++    }
++
++    /// Feed the host's system font catalog: every listed face becomes a known font file
++    /// whose bytes are read on demand. Replaces a previous catalog and retries cached
++    /// misses, so fonts that arrive late still resolve.
++    pub fn set_system_catalog(fonts: Vec<SystemFont>) {
++        let mut g = lock();
++        for f in &fonts {
++            // 同一文件的多个面（.ttc）共享 stem：先到先得，与原生扫描一致；其余面仍可按
++            // 族名找到（by_family 会检查文件里每个面的名字）。
++            g.paths.entry(stem_of(&f.path)).or_insert_with(|| Source::Host { path: f.path.clone(), index: f.index });
++        }
++        g.host = fonts;
++        g.resolved.clear();
++        g.fallback = Fallback::default();
++    }
++
++    /// Register font bytes the host read for `path`: the file becomes loadable and cached
++    /// lookups are retried, so the next layout uses the real font. Past
++    /// [`super::MAX_LOADED_BYTES`] the file is dropped, like a native scan past the bound:
++    /// the name stays unresolved (and cached), so it is not read again.
++    pub fn register_host(path: &str, bytes: Vec<u8>) {
++        let mut g = lock();
++        if g.loaded_bytes >= super::MAX_LOADED_BYTES {
++            return;
++        }
++        g.loaded_bytes = g.loaded_bytes.saturating_add(bytes.len());
++        g.files.insert(stem_of(path), std::sync::Arc::new(bytes));
++        g.resolved.clear();
++        g.fallback = Fallback::default();
++    }
++
++    /// Family names the host listed, deduplicated in listing order (the font menus).
++    pub fn system_families() -> Vec<String> {
++        let mut out: Vec<String> = Vec::new();
++        for f in &lock().host {
++            if !f.family.trim().is_empty() && !out.iter().any(|x| x.eq_ignore_ascii_case(&f.family)) {
++                out.push(f.family.clone());
++            }
++        }
++        out
++    }
++}
++
+ /// Register font bytes that live for the whole process under a name; they are copied only when
+ /// the font is first used, the way the embedded craft-fonts fonts are listed.
+ #[cfg(test)]
+diff --git a/crates/ui-egui/src/mtext_editor.rs b/crates/ui-egui/src/mtext_editor.rs
+index 9e7db58..760bf17 100644
+--- a/crates/ui-egui/src/mtext_editor.rs
++++ b/crates/ui-egui/src/mtext_editor.rs
+@@ -18,6 +18,21 @@ const MIN_PX: f32 = 13.0;
+ const MAX_PX: f32 = 36.0;
+ /// Families the font list offers besides the one set in the text.
+ const FAMILIES: [&str; 6] = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia", "Calibri"];
++
++/// The font list's candidates: the system font families the OTools host listed (wasm
++/// font bridge; empty until the host's catalog arrives), the built-in common families,
++/// and the font currently set. Without the host bridge this is the upstream list.
++fn family_choices(cur: &Option<String>) -> Vec<String> {
++    let mut out: Vec<String> = Vec::new();
++    #[cfg(target_arch = "wasm32")]
++    out.extend(cadcraft_fonts::system_families());
++    for f in FAMILIES.iter().map(|s| s.to_string()).chain(cur.clone()) {
++        if !out.iter().any(|x| x.eq_ignore_ascii_case(&f)) {
++            out.push(f);
++        }
++    }
++    out
++}
+ /// The standard colours (ACI 1..=7) of the colour menu.
+ const SWATCHES: [u16; 7] = [1, 2, 3, 4, 5, 6, 7];
+ /// Ruler snap, in text heights.
+@@ -195,7 +210,7 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64) {
+         // Font
+         let shown = cur.font.clone().unwrap_or_else(|| st.fmt.base_font.clone());
+         egui::ComboBox::from_id_salt("mtext_font").width(120.0).selected_text(shown.clone()).show_ui(ui, |ui| {
+-            for fam in FAMILIES.iter().map(|s| s.to_string()).chain(cur.font.clone().filter(|f| !FAMILIES.contains(&f.as_str()))) {
++            for fam in family_choices(&cur.font) {
+                 if ui.selectable_label(shown == fam, &fam).clicked() {
+                     change(st, |c| c.font = Some(fam.clone()));
+                     refocus = true;
