@@ -18,12 +18,22 @@ mod otools;
 
 #[cfg(target_arch = "wasm32")]
 mod web {
+    use std::cell::{Cell, RefCell};
+
     use cadcraft_engine::Session;
     use cadcraft_ui_egui::{CadApp, Services};
+    use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast as _;
 
     const CANVAS_ID: &str = "cadcraft_canvas";
     const LOADING_ID: &str = "cadcraft_loading";
+
+    thread_local! {
+        /// 宿主语言切换后，下一帧更新 `system_languages` 并重渲染。
+        static NEEDS_LANG_SYNC: Cell<bool> = const { Cell::new(false) };
+        /// 缓存 egui Context，供语言切换事件触发重绘。
+        static APP_CTX: RefCell<Option<egui::Context>> = RefCell::new(None);
+    }
 
     /// 应用、后台读取的文件（File > Open… 与拖放），以及浏览器的
     /// `prefers-reduced-motion`（它是活的，所以「视图 ▸ 辅助功能 ▸ 动画效果 ▸ 使用系统设置」
@@ -32,10 +42,24 @@ mod web {
 
     impl eframe::App for Shell {
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            // 缓存 Context，并响应宿主语言切换：更新 system_languages 后下一帧重渲染。
+            APP_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+            if NEEDS_LANG_SYNC.with(|f| f.replace(false)) {
+                let host = crate::otools::host_language();
+                self.0.system_languages = if host.is_empty() {
+                    web_sys::window()
+                        .map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect())
+                        .unwrap_or_default()
+                } else {
+                    vec![host]
+                };
+            }
             self.1.take_dropped(ctx);
             self.1.drain(&mut self.0);
             self.0.system_animations = self.2.as_ref().map(|reduced| !reduced.matches());
             self.0.logic(ctx);
+            // 让插件更纯粹：吞掉所有外部链接（Discord 等社区外链），点击不再跳出插件。
+            ctx.output_mut(|o| o.commands.retain(|c| !matches!(c, egui::OutputCommand::OpenUrl(_))));
         }
         fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
             self.0.raw_input_hook(raw);
@@ -112,8 +136,15 @@ mod web {
                     options,
                     Box::new(move |cc| {
                         let mut app = CadApp::new(Session::new(), services());
-                        app.system_languages =
-                            web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default();
+                        // 跟随宿主语言：优先用 OTools 注入的 locale，否则退回浏览器 navigator.languages。
+                        let host = crate::otools::host_language();
+                        app.system_languages = if host.is_empty() {
+                            web_sys::window()
+                                .map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect())
+                                .unwrap_or_default()
+                        } else {
+                            vec![host]
+                        };
                         if let Some(profile) = cc.storage.and_then(|s| s.get_string(cadcraft_ui_egui::options::PROFILE_KEY)) {
                             app.load_profile(&profile);
                         }
@@ -168,7 +199,25 @@ mod web {
                     }
                 }
             }
+            install_locale_listener();
         });
+    }
+
+    /// 监听宿主语言切换（OTools 注入的 `otools-locale-changed` 事件），置位标志并请求重绘；
+    /// 真正更新 `system_languages` 发生在下一帧 `Shell::logic`。
+    fn install_locale_listener() {
+        let Some(window) = web_sys::window() else { return };
+        let closure = Closure::wrap(Box::new(|| {
+            NEEDS_LANG_SYNC.with(|f| f.set(true));
+            if let Some(ctx) = APP_CTX.with(|c| c.borrow().clone()) {
+                ctx.request_repaint();
+            }
+        }) as Box<dyn FnMut()>);
+        let _ = window.add_event_listener_with_callback(
+            "otools-locale-changed",
+            closure.as_ref().unchecked_ref::<js_sys::Function>(),
+        );
+        closure.forget();
     }
 }
 

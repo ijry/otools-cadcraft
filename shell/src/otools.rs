@@ -30,6 +30,11 @@ extern "C" {
     #[wasm_bindgen(js_namespace = cadcraftOtools, js_name = "theme")]
     fn host_theme() -> String;
 
+    /// 宿主界面语言（BCP 47，如 `zh-CN`）：OTools 注入到插件 webview 的
+    /// `window.__OTOOLS_LOCALE__.locale` / `document.documentElement.lang`。
+    #[wasm_bindgen(js_namespace = cadcraftOtools, js_name = "language")]
+    fn host_language_raw() -> String;
+
     /// 弹打开文件对话框并读取选中文件，解析成 `[{name, path, dataBase64}]`。
     #[wasm_bindgen(js_namespace = cadcraftOtools, js_name = "openFiles")]
     fn host_open_files() -> js_sys::Promise;
@@ -54,6 +59,11 @@ pub fn available() -> bool {
 /// OTools 的界面主题，用于给 egui 一个初始主题（`""` = 跟随系统）。
 pub fn theme() -> String {
     host_theme()
+}
+
+/// 宿主界面语言（BCP 47，如 `zh-CN`）：跟随 OTools 宿主语言切换。
+pub fn host_language() -> String {
+    host_language_raw()
 }
 
 /// 记住 Inbox：打开的字节和报错都通过它送进应用。
