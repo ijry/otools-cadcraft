@@ -2,7 +2,7 @@
   "devUrl": "http://127.0.0.1:6482",
   "developerName": "jry",
   "displayName": "CADCraft",
-  "displayNameCN": "CAD 制图",
+  "displayNameCN": "CADCraft",
   "entry": "dist/index.html",
   "quickDev": true,
   "hasAd": false,
