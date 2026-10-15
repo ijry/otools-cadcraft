@@ -136,6 +136,11 @@ mod web {
                     options,
                     Box::new(move |cc| {
                         let mut app = CadApp::new(Session::new(), services());
+                        // wasm 读不到系统字体：内嵌 CJK + 阿拉伯 fallback，否则中文/日文/阿拉伯文方框。
+                        cadcraft_ui_egui::theme::set_extra_fallback_fonts(vec![
+                            ("otools-cjk".into(), std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/otools-cjk-subset.ttf")))),
+                            ("otools-arabic".into(), std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/otools-arabic-subset.ttf")))),
+                        ]);
                         // 跟随宿主语言：优先用 OTools 注入的 locale，否则退回浏览器 navigator.languages。
                         let host = crate::otools::host_language();
                         app.system_languages = if host.is_empty() {
