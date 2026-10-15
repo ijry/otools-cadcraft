@@ -5,9 +5,9 @@
 
 ## 铁律
 
-1. **`upstream/` 保持上游原样**。它是 `git subtree` 挂进来的
-   `storytold/cadcraft`。任何「顺手改一下上游」的念头都会在下次
-   `git subtree pull --prefix=upstream ... --squash` 时变成冲突。
+1. **`upstream/` 保持上游原样**。它是 `storytold/cadcraft` 在 `upstream.pin`
+   里那个 commit 的浅拉取结果，**不在 git 里**（见 `scripts/fetch-upstream.mjs`）。
+   任何「顺手改一下上游」的念头都会在下次同步时丢失。
 2. **`shell/src/upload.rs`、`shell/src/download.rs` 是上游原样副本**，不要就地改；
    要改行为就改 `shell/src/otools.rs` 或 `shell/src/main.rs`。
 3. **不引入 native cdylib**。OTools 宿主已经注入了
@@ -37,10 +37,18 @@
 | `shell/src/upload.rs` | 上游副本：`Inbox`，把读到的字节在下一帧喂给 `CadApp` |
 | `shell/src/download.rs` | 上游副本：非 OTools 环境下退回浏览器下载 |
 
-## 常见任务
+## 上游管理：pin + 按需拉取（2026-10-15 从 subtree 迁移）
 
-- **上游更新了** → `git subtree pull --prefix=upstream https://github.com/storytold/cadcraft.git main --squash`，
+上游源码**不在**本仓库里，只有 `upstream.pin` 记录了仓库与精确的 40 位 commit：
+
+- **本地/CI 取源码**：`node scripts/fetch-upstream.mjs`（缺失才拉，已对齐就跳过；`--force` 重拉）。
+- **同步上游更新**：改 `upstream.pin` 的 `commit` 为新的完整 SHA，重新拉取，
   再 diff `upstream/apps/cadcraft-web/src/*.rs` 与 `shell/src/*.rs`。
+- **为什么改**：subtree 会把约 10MB 的快照永久塞进仓库，而且每次同步只增不减。
+  迁移时保留了原来 subtree 锁定的 commit（`e707ab4…`），行为与迁移前一致；
+  历史里那些 blob 仍在（清掉需要 force-push，别擅自做）。
+
+## 常见任务
 - **要加一个新的宿主能力**（例如把 DWG 另存 PDF 走宿主）→ 在 `shell/index.html`
   的 `window.cadcraftOtools` 上加函数，在 `shell/src/otools.rs` 加 `extern "C"` 绑定
   和调用点；**不要**改 `upstream/`。
